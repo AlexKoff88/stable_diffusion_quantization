@@ -1,2 +1,2 @@
-# stable_diffusion_quantization
-Quantization of Stable Diffusion POC
+# Stable Diffusion Quantization
+POC for Stable Diffusion Quantization using NNCF and inference with OpenVINO
