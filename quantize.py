@@ -248,7 +248,7 @@ def parse_args():
     parser.add_argument(
         "--train_batch_size", type=int, default=1, help="Batch size (per device) for the training dataloader."
     )
-    parser.add_argument("--num_train_epochs", type=int, default=100)
+    parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -499,7 +499,6 @@ def main():
     args = parse_args()
 
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
-
 
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -932,9 +931,7 @@ def main():
 
     accelerator.end_training()
     
-    
     export_unet = compression_ctrl_unet.prepare_for_inference(do_copy=False)
-
     export_pipeline = StableDiffusionPipeline(
         text_encoder=text_encoder,
         vae=vae,

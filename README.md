@@ -22,23 +22,23 @@ The minimal HW setup for the run is GPU with 24GB of memory.
 
 ## Run PTQ:
 ```python
-python quantize.py --model_id="runwayml/stable-diffusion-v1-5" --dataset_name="lambdalabs/pokemon-blip-captions" --max_train_steps=0
+python quantize.py --use_kd --center_crop --random_flip --model_id="runwayml/stable-diffusion-v1-5" --dataset_name="lambdalabs/pokemon-blip-captions" --max_train_steps=0
 ```
 
->**NOTE**: The results are better if to use the same dataset that was used to train the original model.
+>**NOTE**: You may need to paly with seed or do one more try to get good results. The results can be better if to use the same dataset that was used to train the original model.
 
 ## Run QAT
 
 * Tune all model parameters:
 ```python
-python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --scale_lr --dataset_name="lambdalabs/pokemon-blip-captions" 
+python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --scale_lr  --dataloader_num_workers=8 --dataset_name="lambdalabs/pokemon-blip-captions" 
 ```
 
 `--ema_device="cpu"` and `--gradient_checkpointing` are used to save GPU mememory.
 
 * Tune only quantization parameters. You can use smaller training steps and any relevant dataset:
 ```python
-python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --scale_lr --dataset_name="lambdalabs/pokemon-blip-captions" --tune_quantizers_only
+python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --scale_lr --dataloader_num_workers=8 --dataset_name="lambdalabs/pokemon-blip-captions" --tune_quantizers_only 
 ```
 
 
