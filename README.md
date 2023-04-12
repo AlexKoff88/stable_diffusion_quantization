@@ -21,7 +21,11 @@ The minimal HW setup for the run is GPU with 24GB of memory.
 >**NOTE**: Potentially you can set the number of training steps to 0 and it will lead to Post-Training Quantization. CPU should be enough in this case but you may need to modify the scipt.
 
 ## Run PTQ:
-python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --dataset_name="lambdalabs/pokemon-blip-captions" --opt_init_steps=1000 --max_train_steps=0
+```python
+python quantize.py --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --dataset_name="lambdalabs/pokemon-blip-captions" --max_train_steps=0
+```
+
+>**NOTE**: The results are better if to use the same dataset that was used to train the original model.
 
 ## Run QAT
 
