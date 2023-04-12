@@ -257,7 +257,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=16,
+        default=4,
         help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
@@ -431,7 +431,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--tune_q_params_only", action="store_true", default=False, help="Whether to train quantization parameters only."
+        "--tune_quantizers_only", action="store_true", default=False, help="Whether to train quantization parameters only."
     )
     parser.add_argument(
         "--use_kd", action="store_true", help="Use Knowledge Distillation to boost accuracy."
@@ -476,10 +476,9 @@ def export_to_onnx(pipeline, save_dir):
         pipeline.save_config(save_dir)
         export_models(
             models_and_onnx_configs=models_and_onnx_configs,
-            output_dir=save_dir,
+            output_dir=Path(save_dir),
             output_names=output_names
-        )
-        
+        )       
 
 def export_to_openvino(pipeline, onnx_dir, save_dir):
     ov_pipe = OVStableDiffusionPipeline.from_pretrained(
@@ -488,14 +487,13 @@ def export_to_openvino(pipeline, onnx_dir, save_dir):
                 model_save_dir=save_dir,
                 tokenizer=pipeline.tokenizer,
                 scheduler=pipeline.scheduler,
-                feature_extractor=pipeline.feature_extractor
+                feature_extractor=pipeline.feature_extractor,
+                compile=False
             )
     apply_moc_transformations(ov_pipe.unet.model, cf=False)
     compress_quantize_weights_transformation(ov_pipe.unet.model)
     ov_pipe.save_pretrained(save_dir)
-    
 
-###### MAIN ######
 def main():
     args = parse_args()
 
@@ -676,7 +674,7 @@ def main():
         num_workers=args.dataloader_num_workers
     )
 
-    ##nncf
+    ## NNCF part
     weight_dtype = torch.float32
 
     nncf_init_data = []
@@ -770,25 +768,6 @@ def main():
             }
         )
         
-    print(nncf_config_dict)
-
-    # optimizer = optimizer_cls(
-    #     unet.parameters(),
-    #     lr=args.learning_rate,
-    #     betas=(args.adam_beta1, args.adam_beta2),
-    #     weight_decay=args.adam_weight_decay,
-    #     eps=args.adam_epsilon,
-    # )
-    # lr_scheduler = get_scheduler(
-    #     args.lr_scheduler,
-    #     optimizer=optimizer,
-    #     num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-    #     num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
-    # )
-    # unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-    #     unet, optimizer, train_dataloader, lr_scheduler
-    # )
-
     orig_unet = unet
 
     nncf_config = NNCFConfig.from_dict(nncf_config_dict)
@@ -801,14 +780,14 @@ def main():
 
     unet.train()
 
-    if args.tune_q_params_only:
+    if args.tune_quantizers_only:
         for p in unet.parameters():
             p.requires_grad = False
             
         quantizers = compression_ctrl_unet.child_ctrls[0].all_quantizations.values() if args.use_kd else compression_ctrl_unet.all_quantizations.values()
         for q in quantizers:
             q.enable_gradients()
-            q.require_grad_ = False
+            q.require_grad_ = True
 
     # Reinit
     optimizer = optimizer_cls(
@@ -851,7 +830,7 @@ def main():
     # Create EMA for the unet.
     if args.ema_device:
         ema_unet = EMAQUnet(orig_unet.parameters())
-        if args.ema_device != "cuda":
+        if args.ema_device == "cpu":
             ema_unet.to("cpu")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
