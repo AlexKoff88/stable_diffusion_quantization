@@ -31,6 +31,7 @@ import nncf  # Important - should be imported directly after torch
 from nncf import NNCFConfig
 from nncf.torch import create_compressed_model, register_default_init_args
 from nncf.torch.initialization import PTInitializingDataLoader
+from nncf.torch.layer_utils import CompressionParameter
 
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -782,12 +783,8 @@ def main():
 
     if args.tune_quantizers_only:
         for p in unet.parameters():
-            p.requires_grad = False
-            
-        quantizers = compression_ctrl_unet.child_ctrls[0].all_quantizations.values() if args.use_kd else compression_ctrl_unet.all_quantizations.values()
-        for q in quantizers:
-            q.enable_gradients()
-            q.require_grad_ = True
+            if not isinstance(p, CompressionParameter):
+                p.requires_grad = False
 
     # Reinit
     optimizer = optimizer_cls(
