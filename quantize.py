@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 import tempfile
 from tqdm import tqdm
+import itertools
 
 import numpy as np
 import torch
@@ -145,9 +146,16 @@ def parse_args():
     parser.add_argument(
         "--model_id",
         type=str,
-        default="runwayml/stable-diffusion-v1-5",
+        default=None,
         required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        required=False,
+        help="Revision of pretrained model identifier from huggingface.co/models.",
     )
     parser.add_argument(
         "--dataset_name",
@@ -249,7 +257,7 @@ def parse_args():
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=4,
+        default=16,
         help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
@@ -307,6 +315,16 @@ def parse_args():
         help="Whether to use EMA model and where to store the EMA model.",
     )
     parser.add_argument(
+        "--non_ema_revision",
+        type=str,
+        default=None,
+        required=False,
+        help=(
+            "Revision of pretrained non-ema model identifier. Must be a branch, tag or git identifier of the local or"
+            " remote repository specified with --pretrained_model_name_or_path."
+        ),
+    )
+    parser.add_argument(
         "--dataloader_num_workers",
         type=int,
         default=0,
@@ -318,6 +336,7 @@ def parse_args():
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="The beta2 parameter for the Adam optimizer.")
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="Weight decay to use.")
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
+    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
     parser.add_argument(
@@ -412,7 +431,7 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--tune_q_params", action="store_true", default=False, help="Whether to train quantization parameters only."
+        "--tune_q_params_only", action="store_true", default=False, help="Whether to train quantization parameters only."
     )
     parser.add_argument(
         "--use_kd", action="store_true", help="Use Knowledge Distillation to boost accuracy."
@@ -495,6 +514,8 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
+    
+    logger.info(accelerator.state, main_process_only=False)
 
     # If passed along, set the training seed now.
     if args.seed is not None:
@@ -517,14 +538,14 @@ def main():
         elif args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
-    args.model_id = "runwayml/stable-diffusion-v1-5"
-    pipeline = DiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
+    pipeline = DiffusionPipeline.from_pretrained(args.model_id)
 
     # Load models and create wrapper for stable diffusion
     tokenizer = pipeline.tokenizer
     text_encoder = pipeline.text_encoder
     vae = pipeline.vae
     unet = pipeline.unet
+    noise_scheduler = pipeline.scheduler
 
     # Freeze vae and text_encoder
     vae.requires_grad_(False)
@@ -550,8 +571,6 @@ def main():
         optimizer_cls = bnb.optim.AdamW8bit
     else:
         optimizer_cls = torch.optim.AdamW
-        
-    noise_scheduler = pipeline.scheduler
 
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
@@ -667,11 +686,10 @@ def main():
     text_encoder.to(unet.device)
     train_dataloader = accelerator.prepare_data_loader(train_dataloader)
 
-    init_steps = min(args.nncf_init_steps, len(train_dataloader))
+    init_steps = min(args.opt_init_steps, len(train_dataloader))
     logger.info(f"Fetching {init_steps} for the initialization...")
-    for step in tqdm(range(init_steps)):
+    for _, batch in tqdm(zip(range(init_steps), itertools.islice(train_dataloader, 0, init_steps))):
         with torch.no_grad():
-            batch = train_dataloader[step]
             # Convert images to latent space
             latents = vae.encode(batch["pixel_values"].to(weight_dtype)).latent_dist.sample()
             latents = latents * 0.18215
@@ -692,7 +710,6 @@ def main():
 
 
     class UnetInitDataLoader(PTInitializingDataLoader):
-
         def get_inputs(self, dataloader_output):
             noisy_latents = dataloader_output[0].float().to(unet.device, non_blocking=True)
             timesteps = dataloader_output[1].float().to(unet.device, non_blocking=True)
@@ -702,11 +719,10 @@ def main():
         def get_target(self, dataloader_output):
             return dataloader_output[0]
 
-
     class UnetInitDataset(torch.utils.data.Dataset):
-        def __len__(self): return args.nncf_init_steps
+        def __len__(self): return args.opt_init_steps
         def __getitem__(self, index): 
-            i = index // args.nncf_init_steps
+            i = index // args.opt_init_steps
             return nncf_init_data[i]
         
         
@@ -729,8 +745,8 @@ def main():
                 "algorithm": "quantization",  # Specify the algorithm here.
                 "preset" : "mixed",
                 "initializer": {
-                    "range": {"num_init_samples": args.nncf_init_steps, "type": "mean_min_max"},
-                    "batchnorm_adaptation": {"num_bn_adaptation_samples": args.nncf_init_steps},
+                    "range": {"num_init_samples": args.opt_init_steps, "type": "mean_min_max"},
+                    "batchnorm_adaptation": {"num_bn_adaptation_samples": args.opt_init_steps},
                 },
                 "scope_overrides": {"activations": {"{re}.*baddbmm_0": {"mode": "symmetric"}}},
                 "ignored_scopes": [
@@ -753,36 +769,39 @@ def main():
                 "type": "softmax" # or mse
             }
         )
+        
+    print(nncf_config_dict)
 
-    optimizer = optimizer_cls(
-        unet.parameters(),
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
-    )
-    lr_scheduler = get_scheduler(
-        args.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
-    )
-    unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, optimizer, train_dataloader, lr_scheduler
-    )
+    # optimizer = optimizer_cls(
+    #     unet.parameters(),
+    #     lr=args.learning_rate,
+    #     betas=(args.adam_beta1, args.adam_beta2),
+    #     weight_decay=args.adam_weight_decay,
+    #     eps=args.adam_epsilon,
+    # )
+    # lr_scheduler = get_scheduler(
+    #     args.lr_scheduler,
+    #     optimizer=optimizer,
+    #     num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
+    #     num_training_steps=args.max_train_steps * args.gradient_accumulation_steps,
+    # )
+    # unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+    #     unet, optimizer, train_dataloader, lr_scheduler
+    # )
 
     orig_unet = unet
 
     nncf_config = NNCFConfig.from_dict(nncf_config_dict)
     nncf_config_unet = register_default_init_args(nncf_config, UnetInitDataLoader(dataloader))
     compression_ctrl_unet, unet = create_compressed_model(unet, nncf_config_unet)
-
     statistics_unet = compression_ctrl_unet.statistics()
     logger.info(statistics_unet.to_str())
+    del nncf_init_data
+    torch.cuda.empty_cache()
 
     unet.train()
 
-    if args.tune_q_params:
+    if args.tune_q_params_only:
         for p in unet.parameters():
             p.requires_grad = False
             
@@ -953,6 +972,9 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdirname:
         export_to_onnx(export_pipeline, tmpdirname)
         export_to_openvino(export_pipeline, tmpdirname, Path(args.output_dir) / "openvino")
+        
+if __name__ == "__main__":
+    main()
         
 
 

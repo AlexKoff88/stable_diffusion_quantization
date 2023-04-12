@@ -17,7 +17,7 @@ The minimal HW setup for the run is GPU with 24GB of memory.
 
 ## Run QAT
 ```python
-python quantize.py --use_kd --ema_device="cpu"
+python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5"
 ```
 
 `--ema_device="cpu"` is used to save GPU mememory.
