@@ -212,7 +212,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="sd-model-finetuned",
+        default="sd-model-quantized",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -728,13 +728,13 @@ def main():
     nncf_config_dict = {
         "input_info": [
             {   #"keyword": "latent_model_input",
-                "sample_size": [1, 4, 64, 64]
+                "sample_size": [1, unet.config["in_channels"], unet.config["sample_size"], unet.config["sample_size"]]
             },
             {   #"keyword": "t",
                 "sample_size": [1]
             },
             {   #"keyword": "encoder_hidden_states",
-                "sample_size": [1,77,768]
+                "sample_size": [1,text_encoder.config.max_position_embeddings,text_encoder.config.hidden_size]
             }
         ],
         "log_dir": args.output_dir,  # The log directory for NNCF-specific logging outputs.
