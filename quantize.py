@@ -27,6 +27,7 @@ from PIL import Image
 import requests
 from io import BytesIO
 from functools import partial
+import random
 
 import numpy as np
 import torch
@@ -84,16 +85,26 @@ def get_pil_from_url(url):
     image = Image.open(BytesIO(response.content))
     return image.convert("RGB")
 
-BACKUP_IMAGE = get_pil_from_url("https://thumbs.dreamstime.com/t/altai-mountains-mountain-lake-russia-siberia-chuya-ridge-49130812.jpg")
 
+BACKUP_IMAGE = get_pil_from_url("https://thumbs.dreamstime.com/t/altai-mountains-mountain-lake-russia-siberia-chuya-ridge-49130812.jpg")
+AVAILABLE_EXAMPLES = []
 def laion2B_preprocess_train(examples, train_transforms, tokenize_captions, image_column="URL"):
     url = examples[image_column]
     try:
         image = get_pil_from_url(url)
+        AVAILABLE_EXAMPLES.append((url, examples["TEXT"]))
     except:
-        print(f"Can't load image from url: {url}, using backup image")
-        image = BACKUP_IMAGE.copy()
-        
+        print(f"Can't load image from url: {url}, using backup")
+        if len(AVAILABLE_EXAMPLES) > 0:
+            backup_id = random.randint(0, len(AVAILABLE_EXAMPLES)-1)
+            backup_example = AVAILABLE_EXAMPLES[backup_id]
+            try:
+                image = get_pil_from_url(backup_example[0])
+                examples["TEXT"] = backup_example[1]
+            except:
+                image = BACKUP_IMAGE.copy()
+        else:
+            image = BACKUP_IMAGE.copy()
     examples["pixel_values"] = train_transforms(image)
     examples["input_ids"] = tokenize_captions(examples)
     return examples
