@@ -23,6 +23,10 @@ from typing import Iterable, Optional
 import tempfile
 from tqdm import tqdm
 import itertools
+from PIL import Image
+import requests
+from io import BytesIO
+from functools import partial
 
 import numpy as np
 import torch
@@ -69,9 +73,42 @@ def get_full_repo_name(model_id: str, organization: Optional[str] = None, token:
     else:
         return f"{organization}/{model_id}"
 
+def pokemon_preprocess_train(examples, train_transforms, tokenize_captions, image_column="image"):
+    image = examples[image_column]
+    examples["pixel_values"] = train_transforms(image.convert("RGB"))
+    examples["input_ids"] = tokenize_captions(examples)
+    return examples
+
+def get_pil_from_url(url):
+    response = requests.get(url, timeout=5)
+    image = Image.open(BytesIO(response.content))
+    return image.convert("RGB")
+
+BACKUP_IMAGE = get_pil_from_url("https://thumbs.dreamstime.com/t/altai-mountains-mountain-lake-russia-siberia-chuya-ridge-49130812.jpg")
+
+def laion2B_preprocess_train(examples, train_transforms, tokenize_captions, image_column="URL"):
+    url = examples[image_column]
+    try:
+        image = get_pil_from_url(url)
+    except:
+        print(f"Can't load image from url: {url}, using backup image")
+        image = BACKUP_IMAGE.copy()
+        
+    examples["pixel_values"] = train_transforms(image)
+    examples["input_ids"] = tokenize_captions(examples)
+    return examples
 
 dataset_name_mapping = {
-    "lambdalabs/pokemon-blip-captions": ("image", "text"),
+    "lambdalabs/pokemon-blip-captions": {
+        "columns": ("image", "text"),
+        "preprocess_fn": pokemon_preprocess_train,
+        "streaming": False,
+    },
+    "laion/laion2B-en": {
+        "columns": ("URL", "TEXT"),
+        "preprocess_fn": laion2B_preprocess_train,
+        "streaming": True,
+    }
 }
 
 
@@ -185,12 +222,12 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--image_column", type=str, default="image", help="The column of the dataset containing an image."
+        "--image_column", type=str, default=None, help="The column of the dataset containing an image."
     )
     parser.add_argument(
         "--caption_column",
         type=str,
-        default="text",
+        default=None,
         help="The column of the dataset containing a caption or a list of captions.",
     )
     parser.add_argument(
@@ -275,7 +312,6 @@ def parse_args():
     parser.add_argument(
         "--scale_lr",
         action="store_true",
-        default=True,
         help="Scale the learning rate by the number of GPUs, gradient accumulation steps, and batch size.",
     )
     parser.add_argument(
@@ -575,12 +611,17 @@ def main():
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
     # download the dataset.
+    dataset_settings = dataset_name_mapping.get(args.dataset_name, None)
+    if dataset_settings is None:
+        raise ValueError(f"Dataset {args.dataset_name} not supported. Please choose from {dataset_name_mapping.keys()}")
+    
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         dataset = load_dataset(
             args.dataset_name,
             args.dataset_config_name,
             cache_dir=args.cache_dir,
+            streaming = dataset_settings["streaming"]
         )
     else:
         data_files = {}
@@ -599,7 +640,7 @@ def main():
     column_names = dataset["train"].column_names
 
     # 6. Get the column names for input/target.
-    dataset_columns = dataset_name_mapping.get(args.dataset_name, None)
+    dataset_columns = dataset_settings["columns"]
     if args.image_column is None:
         image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
     else:
@@ -621,17 +662,17 @@ def main():
     # We need to tokenize input captions and transform the images.
     def tokenize_captions(examples, is_train=True):
         captions = []
-        for caption in examples[caption_column]:
-            if isinstance(caption, str):
-                captions.append(caption)
-            elif isinstance(caption, (list, np.ndarray)):
-                # take a random caption if there are multiple
-                captions.append(random.choice(caption) if is_train else caption[0])
-            else:
-                raise ValueError(
-                    f"Caption column `{caption_column}` should contain either strings or lists of strings."
-                )
-        inputs = tokenizer(captions, max_length=tokenizer.model_max_length, padding="do_not_pad", truncation=True)
+        caption = examples[caption_column]
+        if isinstance(caption, str):
+            captions.append(caption)
+        elif isinstance(caption, (list, np.ndarray)):
+            # take a random caption if there are multiple
+            captions.append(random.choice(caption) if is_train else caption[0])
+        else:
+            raise ValueError(
+                f"Caption column `{caption_column}` should contain either strings or lists of strings."
+            )
+        inputs = tokenizer(captions[0], max_length=tokenizer.model_max_length, padding="do_not_pad", truncation=True)
         input_ids = inputs.input_ids
         return input_ids
 
@@ -645,20 +686,17 @@ def main():
         ]
     )
 
-    def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
-        examples["pixel_values"] = [train_transforms(image) for image in images]
-        examples["input_ids"] = tokenize_captions(examples)
-
-        return examples
+    preprocess_fn = partial(dataset_settings["preprocess_fn"], 
+                            train_transforms=train_transforms, tokenize_captions=tokenize_captions)
 
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
+            dataset["train"] = dataset["train"].shuffle(seed=42, buffer_size=args.max_train_samples)
         # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
+        train_dataset = dataset["train"]#.with_transform(preprocess_fn)
 
     def collate_fn(examples):
+        examples = [preprocess_fn(example) for example in examples]
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
         pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
         input_ids = [example["input_ids"] for example in examples]
@@ -670,7 +708,7 @@ def main():
         }
 
     train_dataloader = torch.utils.data.DataLoader(
-        train_dataset, shuffle=True, collate_fn=collate_fn, batch_size=args.train_batch_size,
+        train_dataset, collate_fn=collate_fn, batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers
     )
 
@@ -684,9 +722,8 @@ def main():
     text_encoder.to(unet.device)
     train_dataloader = accelerator.prepare_data_loader(train_dataloader)
 
-    init_steps = min(args.opt_init_steps, len(train_dataloader))
-    logger.info(f"Fetching {init_steps} for the initialization...")
-    for _, batch in tqdm(zip(range(init_steps), itertools.islice(train_dataloader, 0, init_steps))):
+    logger.info(f"Fetching {args.opt_init_steps} for the initialization...")
+    for _, batch in tqdm(zip(range(args.opt_init_steps), itertools.islice(train_dataloader, 0, args.opt_init_steps))):
         with torch.no_grad():
             # Convert images to latent space
             latents = vae.encode(batch["pixel_values"].to(weight_dtype)).latent_dist.sample()
@@ -756,7 +793,8 @@ def main():
                     "{re}.*mul___[0-2]",
                     "{re}.*silu_[0-2]",
                 ],
-                "export_to_onnx_standard_ops": True
+                "export_to_onnx_standard_ops": True,
+                #"compression_lr_multiplier": 10.0,
             },
         ]
     }
@@ -764,7 +802,7 @@ def main():
         nncf_config_dict["compression"].append(
             {
                 "algorithm": "knowledge_distillation",
-                "type": "softmax" # or mse
+                "type": "mse" # or "softmax"
             }
         )
         
@@ -802,7 +840,8 @@ def main():
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    dataset_len = args.max_train_samples if args.max_train_samples is not None else len(train_dataloader)
+    num_update_steps_per_epoch = math.ceil(dataset_len / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -830,7 +869,7 @@ def main():
             ema_unet.to("cpu")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(dataset_len / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
@@ -845,7 +884,7 @@ def main():
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
+    logger.info(f"  Num examples = {dataset_len}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")

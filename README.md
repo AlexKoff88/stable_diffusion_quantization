@@ -22,7 +22,12 @@ The minimal HW setup for the run is GPU with 24GB of memory.
 
 ## Run PTQ:
 ```python
-python quantize.py --use_kd --center_crop --random_flip --model_id="runwayml/stable-diffusion-v1-5" --dataset_name="lambdalabs/pokemon-blip-captions" --max_train_steps=0
+python quantize.py --use_kd --center_crop --random_flip --dataset_name="lambdalabs/pokemon-blip-captions" --max_train_steps=0 --model_id="runwayml/stable-diffusion-v1-5"
+```
+
+On a part of "laion/laion2B-en" dateset:
+```python
+python quantize.py --use_kd --center_crop --random_flip --dataset_name="laion/laion2B-en" --model_id="stabilityai/stable-diffusion-2-1" --max_train_samples=500 --dataloader_num_workers=6
 ```
 
 >**NOTE**: You may need to paly with seed or do one more try to get good results. The results can be better if to use the same dataset that was used to train the original model.
