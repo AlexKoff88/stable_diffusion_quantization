@@ -81,7 +81,7 @@ def pokemon_preprocess_train(examples, train_transforms, tokenize_captions, imag
     return examples
 
 def get_pil_from_url(url):
-    response = requests.get(url, timeout=5)
+    response = requests.get(url, timeout=10)
     image = Image.open(BytesIO(response.content))
     return image.convert("RGB")
 
@@ -479,6 +479,13 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--opt_init_type",
+        type=str,
+        default="mean_min_max",
+        choices=["min_max", "mean_min_max", "threesigma"],
+        help="They way how to estimate activation quantization paramters at the initializatin step before QAT.",
+    )
+    parser.add_argument(
         "--tune_quantizers_only", action="store_true", default=False, help="Whether to train quantization parameters only."
     )
     parser.add_argument(
@@ -791,7 +798,7 @@ def main():
                 "algorithm": "quantization",  # Specify the algorithm here.
                 "preset" : "mixed",
                 "initializer": {
-                    "range": {"num_init_samples": args.opt_init_steps, "type": "mean_min_max"},
+                    "range": {"num_init_samples": args.opt_init_steps, "type": args.opt_init_type},
                     "batchnorm_adaptation": {"num_bn_adaptation_samples": args.opt_init_steps},
                 },
                 "scope_overrides": {"activations": {"{re}.*baddbmm_0": {"mode": "symmetric"}}},
@@ -981,7 +988,7 @@ def main():
 
     accelerator.end_training()
     
-    export_unet = compression_ctrl_unet.prepare_for_inference(do_copy=False)
+    export_unet = compression_ctrl_unet.strip(do_copy=False)
     export_pipeline = StableDiffusionPipeline(
         text_encoder=text_encoder,
         vae=vae,

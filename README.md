@@ -54,14 +54,14 @@ CUDA_VISIBLE_DEVICES=2 python quantize.py --ema_device="cpu" --use_kd --center_c
 
 * Tune model parameters on a target dataset with QAT:
 ```python
-python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --scale_lr  --dataloader_num_workers=8 --dataset_name="lambdalabs/pokemon-blip-captions" 
+python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --dataloader_num_workers=8 --dataset_name="lambdalabs/pokemon-blip-captions" --max_train_steps=15000
 ```
 
 `--ema_device="cpu"` and `--gradient_checkpointing` are used to save GPU mememory.
 
-* Tune only quantization parameters. You can use smaller training steps and any relevant dataset:
+* Tune only quantization parameters for a short time. You can use smaller training steps and any relevant dataset:
 ```python
-python quantize.py --use_kd --ema_device="cpu" --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --scale_lr --dataloader_num_workers=8 --dataset_name="lambdalabs/pokemon-blip-captions" --tune_quantizers_only 
+python quantize.py --use_kd --model_id="runwayml/stable-diffusion-v1-5" --center_crop --random_flip --gradient_checkpointing --dataloader_num_workers=8 --dataset_name="laion/laion2B-en" --tune_quantizers_only --max_train_steps=256 --max_train_samples=10000 --opt_init_steps=800 --opt_init_type="min_max"
 ```
 
 
