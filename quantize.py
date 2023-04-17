@@ -63,6 +63,7 @@ from optimum.utils import (
 
 from itertools import chain
 
+random.seed(42)
 logger = get_logger(__name__)
 
 def get_full_repo_name(model_id: str, organization: Optional[str] = None, token: Optional[str] = None):
@@ -81,12 +82,13 @@ def pokemon_preprocess_train(examples, train_transforms, tokenize_captions, imag
     return examples
 
 def get_pil_from_url(url):
-    response = requests.get(url, timeout=10)
+    response = requests.get(url)
     image = Image.open(BytesIO(response.content))
     return image.convert("RGB")
 
 
-BACKUP_IMAGE = get_pil_from_url("https://thumbs.dreamstime.com/t/altai-mountains-mountain-lake-russia-siberia-chuya-ridge-49130812.jpg")
+BACKUP_PAIR = (get_pil_from_url("https://thumbs.dreamstime.com/t/altai-mountains-mountain-lake-russia-siberia-chuya-ridge-49130812.jpg"),
+               "Altai mountains Stock Photography")
 AVAILABLE_EXAMPLES = []
 def laion2B_preprocess_train(examples, train_transforms, tokenize_captions, image_column="URL"):
     url = examples[image_column]
@@ -102,9 +104,12 @@ def laion2B_preprocess_train(examples, train_transforms, tokenize_captions, imag
                 image = get_pil_from_url(backup_example[0])
                 examples["TEXT"] = backup_example[1]
             except:
-                image = BACKUP_IMAGE.copy()
+                image = BACKUP_PAIR[0].copy()
+                examples["TEXT"] = BACKUP_PAIR[1]
         else:
-            image = BACKUP_IMAGE.copy()
+            image = BACKUP_PAIR[0].copy()
+            examples["TEXT"] = BACKUP_PAIR[1]
+            
     examples["pixel_values"] = train_transforms(image)
     examples["input_ids"] = tokenize_captions(examples)
     return examples
@@ -269,7 +274,7 @@ def parse_args():
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument("--seed", type=int, default=42, help="A seed for reproducible training.")
     parser.add_argument(
         "--resolution",
         type=int,
